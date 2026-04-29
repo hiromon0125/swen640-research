@@ -14,4 +14,5 @@ wheels/
 !.vscode/
 
 # data
-data/*
+data/**
+!data/README.md
