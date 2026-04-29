@@ -8,6 +8,10 @@ wheels/
 
 # Virtual environments
 .venv
+.env
 
 # IDE
 !.vscode/
+
+# data
+data/*
