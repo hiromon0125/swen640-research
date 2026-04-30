@@ -10,7 +10,6 @@ with app.setup:
     import duckdb
     import marimo as mo
     import requests
-
     from utils import check_access, download_dataset
 
     GITHUB_TOKEN = os.environ["GITHUB_TOKEN"]
