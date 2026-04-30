@@ -7,8 +7,9 @@ app = marimo.App(width="medium")
 @app.cell
 def _():
     import duckdb
+
     con = duckdb.connect("data/repos.duckdb")
-    return
+    return con
 
 
 if __name__ == "__main__":
