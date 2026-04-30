@@ -4,15 +4,14 @@ __generated_with = "0.23.4"
 app = marimo.App()
 
 with app.setup:
-    import marimo as mo
-    from utils import check_access, gh, download_dataset
-    import duckdb
-    import polars as pl
-    import requests
     import os
-    from github import Github, Auth
-    from github import GithubException
     from datetime import datetime, timezone
+
+    import duckdb
+    import marimo as mo
+    import requests
+
+    from utils import check_access, download_dataset
 
     GITHUB_TOKEN = os.environ["GITHUB_TOKEN"]
     GRAPHQL_URL = "https://api.github.com/graphql"
@@ -28,19 +27,15 @@ def _():
 def _():
     con = duckdb.connect("data/repos.duckdb")
 
-
     def setup_repos(_):
-        with mo.status.spinner(
-            title="Loading Data", subtitle="Downloading dataset..."
-        ) as _spinner:
+        with mo.status.spinner(title="Loading Data", subtitle="Downloading dataset...") as _spinner:
             try:
-                path = download_dataset(
-                    "muhammadaqeelkabir/top-github-repositories"
-                )
+                path = download_dataset("muhammadaqeelkabir/top-github-repositories")
             except Exception as e:
                 _spinner.update(subtitle=f"Error downloading dataset: {e}")
                 print(
-                    "Error downloading dataset(Make sure to set the environmental variable and restart the notbook server):",
+                    "Error downloading dataset(Make sure to set the environmental variable and \
+                        restart the notbook server):",
                     e,
                 )
                 return
@@ -51,16 +46,12 @@ def _():
             """)
             _spinner.update("Data complete!")
 
-
     def cleanup_db(_):
         con.execute("DROP TABLE IF EXISTS repos")
         print("Table cleaned up!")
 
-
     create_btn = mo.ui.button(on_click=setup_repos, label="Create Table!")
-    clean_btn = mo.ui.button(
-        on_click=cleanup_db, kind="danger", label="Cleanup table"
-    )
+    clean_btn = mo.ui.button(on_click=cleanup_db, kind="danger", label="Cleanup table")
     mo.hstack(
         [create_btn, clean_btn],
         justify="start",
@@ -71,10 +62,10 @@ def _():
 @app.cell
 def _(con, repos):
     _df = mo.sql(
-        f"""
+        """
         SELECT * FROM repos
         """,
-        engine=con
+        engine=con,
     )
     return
 
@@ -82,13 +73,13 @@ def _(con, repos):
 @app.cell
 def _(con, repos):
     _df = mo.sql(
-        f"""
+        """
         DROP TABLE IF EXISTS clean_repos;
         -- Filter non-programming repositories
         CREATE TABLE IF NOT EXISTS clean_repos AS 
             SELECT * FROM repos WHERE "Primary Language" <> '0'
         """,
-        engine=con
+        engine=con,
     )
     return
 
@@ -96,10 +87,10 @@ def _(con, repos):
 @app.cell
 def _(clean_repos, con):
     _df = mo.sql(
-        f"""
+        """
         SELECT * FROM clean_repos
         """,
-        engine=con
+        engine=con,
     )
     return
 
@@ -120,7 +111,9 @@ def _(con):
 
 @app.cell
 def _(copy_unprocessed_repos):
-    mo.ui.button(label="reset skipped repos", kind="danger", on_click=lambda _: copy_unprocessed_repos())
+    mo.ui.button(
+        label="reset skipped repos", kind="danger", on_click=lambda _: copy_unprocessed_repos()
+    )
     return
 
 
@@ -129,7 +122,6 @@ def _(con):
     import time
 
     OLDEST_DATE = datetime(2022, 1, 1, tzinfo=timezone.utc)
-
 
     def process_single_repo(repo_full_name, progress, skipped_repos):
         owner, name = repo_full_name.split("/")
@@ -159,7 +151,7 @@ def _(con):
             }
           }
         }
-        """
+        """  # noqa: E501
 
         rows = []
         cursor = None
@@ -185,46 +177,30 @@ def _(con):
                 if response.status_code in (403, 429):
                     print(f"Rate limited. Retrying in {retry_delay}s...")
                     time.sleep(retry_delay)
-                    retry_delay = min(
-                        retry_delay * 2, 60
-                    )  # Exponential backoff up to 60s
+                    retry_delay = min(retry_delay * 2, 60)  # Exponential backoff up to 60s
                     continue
 
                 response.raise_for_status()
                 retry_delay = 1  # Reset delay on success
 
                 result = response.json()
-                data = (
-                    result.get("data", {})
-                    .get("repository", {})
-                    .get("pullRequests", {})
-                )
+                data = result.get("data", {}).get("repository", {}).get("pullRequests", {})
                 nodes = data.get("nodes", [])
 
                 if not nodes:
                     break
 
                 for pr in nodes:
-                    created_at = datetime.fromisoformat(
-                        pr["createdAt"].replace("Z", "+00:00")
-                    )
+                    created_at = datetime.fromisoformat(pr["createdAt"].replace("Z", "+00:00"))
                     if created_at < OLDEST_DATE:
                         has_next_page = False
                         break
 
-                    approvals = sum(
-                        1
-                        for r in pr["reviews"]["nodes"]
-                        if r["state"] == "APPROVED"
-                    )
+                    approvals = sum(1 for r in pr["reviews"]["nodes"] if r["state"] == "APPROVED")
                     changes = sum(
-                        1
-                        for r in pr["reviews"]["nodes"]
-                        if r["state"] == "CHANGES_REQUESTED"
+                        1 for r in pr["reviews"]["nodes"] if r["state"] == "CHANGES_REQUESTED"
                     )
-                    participants = [
-                        p["login"] for p in pr["participants"]["nodes"]
-                    ]
+                    participants = [p["login"] for p in pr["participants"]["nodes"]]
 
                     rows.append(
                         (
@@ -254,9 +230,7 @@ def _(con):
                 error_msg = e.__class__.__name__
                 print(f"Error processing {repo_full_name}: {error_msg}")
                 skipped_repos.append((repo_full_name, error_msg))
-                progress.update(
-                    subtitle=f"Error processing {repo_full_name}: {error_msg}"
-                )
+                progress.update(subtitle=f"Error processing {repo_full_name}: {error_msg}")
                 break
 
         if rows:
@@ -265,7 +239,6 @@ def _(con):
                 rows,
             )
         progress.update(1, subtitle=f"Processed {repo_full_name}")
-
 
     def collect_repo_prs(force=False):
         repos = con.execute('SELECT "Full Name" FROM clean_repos').fetchall()
@@ -294,9 +267,7 @@ def _(con):
                 num_files_changed INTEGER
             )
         """)
-        con.execute(
-            "CREATE TABLE IF NOT EXISTS skipped_repos (repo_name VARCHAR, reason VARCHAR)"
-        )
+        con.execute("CREATE TABLE IF NOT EXISTS skipped_repos (repo_name VARCHAR, reason VARCHAR)")
 
         with mo.status.progress_bar(
             total=len(repos), title="Fetching GitHub PR Data via GraphQL"
@@ -305,9 +276,7 @@ def _(con):
                 process_single_repo(repo_name, progress, skipped_repos)
 
         if skipped_repos:
-            con.executemany(
-                "INSERT INTO skipped_repos VALUES (?, ?)", skipped_repos
-            )
+            con.executemany("INSERT INTO skipped_repos VALUES (?, ?)", skipped_repos)
             print(f"Finished. Skipped {len(skipped_repos)} repositories.")
 
     return (collect_repo_prs,)
@@ -316,7 +285,6 @@ def _(con):
 @app.cell
 def _():
     force_toggle = mo.ui.switch(label="Force toggle", value=False)
-    force_toggle
     return (force_toggle,)
 
 
@@ -333,10 +301,10 @@ def _(collect_repo_prs, force_toggle):
 @app.cell
 def _(con, prs):
     _df = mo.sql(
-        f"""
+        """
         SELECT * FROM prs
         """,
-        engine=con
+        engine=con,
     )
     return
 

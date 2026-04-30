@@ -4,25 +4,20 @@ name = "marimo-template"
 requires-python = ">=3.12,<3.14"
 version = "0.1.0"
 dependencies = [
-    "anthropic>=0.97.0",
-    "gdrive-fsspec>=0.4.0",
-    "google-genai>=1.73.1",
-    "kaggle>=2.1.0",
-    "kagglehub>=1.0.1",
-    "marimo[sql]>=0.23.4",
-    "mcp>=1.27.0",
-    "pydantic-ai-slim>=1.88.0",
-    "pygithub>=2.9.1",
-    "requests>=2.33.1",
+  "anthropic>=0.97.0",
+  "gdrive-fsspec>=0.4.0",
+  "google-genai>=1.73.1",
+  "kaggle>=2.1.0",
+  "kagglehub>=1.0.1",
+  "marimo[sql]>=0.23.4",
+  "mcp>=1.27.0",
+  "pydantic-ai-slim>=1.88.0",
+  "pygithub>=2.9.1",
+  "requests>=2.33.1",
 ]
 
 [dependency-groups]
-dev = [
-  "pre-commit>=4.0.1",
-  "pytest>=8.3.4",
-  "ruff>=0.8.3",
-  "marimo>=0.13.14",
-]
+dev = ["pre-commit>=4.0.1", "pytest>=8.3.4", "ruff>=0.8.3", "marimo>=0.13.14"]
 
 [tool.pytest.ini_options]
 pythonpath = ["./src"]
@@ -31,6 +26,7 @@ testpaths = ["tests", "marimo_template"]
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+src = ["src/*", "notebooks"]
 
 [tool.ruff.lint]
 select = [
@@ -39,6 +35,9 @@ select = [
   "I", # isort
   "B", # flake8-bugbear
 ]
+
+[tool.ty.environment]
+root = ["./src", "./notebooks"]
 
 [tool.marimo.ai]
 rules = "- prefer polars over pandas\n- make charts using altair"
