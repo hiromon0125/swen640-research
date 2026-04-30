@@ -826,6 +826,7 @@ dependencies = [
     { name = "mcp" },
     { name = "pydantic-ai-slim" },
     { name = "pygithub" },
+    { name = "requests" },
 ]
 
 [package.dev-dependencies]
@@ -847,6 +848,7 @@ requires-dist = [
     { name = "mcp", specifier = ">=1.27.0" },
     { name = "pydantic-ai-slim", specifier = ">=1.88.0" },
     { name = "pygithub", specifier = ">=2.9.1" },
+    { name = "requests", specifier = ">=2.33.1" },
 ]
 
 [package.metadata.requires-dev]

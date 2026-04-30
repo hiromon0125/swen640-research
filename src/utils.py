@@ -3,7 +3,6 @@ from contextlib import contextmanager
 
 import kagglehub
 from github import Auth, Github
-from kagglehub import KaggleDatasetAdapter
 
 
 @contextmanager
@@ -11,7 +10,8 @@ def gh():
     access_token = os.getenv("GITHUB_TOKEN")
     if not access_token:
         raise ValueError(
-            "GITHUB_TOKEN environment variable not set. Please set it before running the script. `cp example.env .env` and edit the .env file to add your GitHub token."
+            """GITHUB_TOKEN environment variable not set. Please set it before running the script. 
+            Run `cp example.env .env` and edit the .env file to add your GitHub token."""
         )
 
     auth = Auth.Token(access_token)

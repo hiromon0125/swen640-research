@@ -1,12 +1,21 @@
 import marimo
 
 __generated_with = "0.23.4"
-app = marimo.App(width="medium")
+app = marimo.App()
 
 with app.setup:
     import marimo as mo
     from utils import check_access, gh, download_dataset
     import duckdb
+    import polars as pl
+    import requests
+    import os
+    from github import Github, Auth
+    from github import GithubException
+    from datetime import datetime, timezone
+
+    GITHUB_TOKEN = os.environ["GITHUB_TOKEN"]
+    GRAPHQL_URL = "https://api.github.com/graphql"
 
 
 @app.cell
@@ -46,6 +55,7 @@ def _():
     def cleanup_db(_):
         con.execute("DROP TABLE IF EXISTS repos")
         print("Table cleaned up!")
+
 
     create_btn = mo.ui.button(on_click=setup_repos, label="Create Table!")
     clean_btn = mo.ui.button(
@@ -96,90 +106,227 @@ def _(clean_repos, con):
 
 @app.cell
 def _(con):
-    import polars as pl
-    from github import GithubException
+    # copy clean_repos into skipped repos with reason of unprocessed
+    def copy_unprocessed_repos():
+        con.execute("DELETE TABLE IF EXISTS skipped_repos")
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS skipped_repos AS
+            SELECT "Full Name", 'Unprocessed' as reason FROM clean_repos
+            WHERE "Full Name" NOT IN (SELECT repo_name FROM prs)
+        """)
 
-    def process_single_repo(repo_full_name, g, progress):
-        try:
-            repo = g.get_repo(repo_full_name)
-        except GithubException:
-            progress.update(1)
-            return
-        
-        prs = repo.get_pulls(state='all')
-    
+    return (copy_unprocessed_repos,)
+
+
+@app.cell
+def _(copy_unprocessed_repos):
+    mo.ui.button(label="reset skipped repos", kind="danger", on_click=lambda _: copy_unprocessed_repos())
+    return
+
+
+@app.cell
+def _(con):
+    import time
+
+    OLDEST_DATE = datetime(2022, 1, 1, tzinfo=timezone.utc)
+
+
+    def process_single_repo(repo_full_name, progress, skipped_repos):
+        owner, name = repo_full_name.split("/")
+        headers = {"Authorization": f"Bearer {GITHUB_TOKEN}"}
+
+        # GraphQL Query to fetch PRs, reviews, and participants in one request
+        query = """
+        query($owner: String!, $name: String!, $cursor: String) {
+          repository(owner: $owner, name: $name) {
+            pullRequests(first: 50, after: $cursor, states: CLOSED, orderBy: {field: CREATED_AT, direction: DESC}) {
+              pageInfo { hasNextPage, endCursor }
+              nodes {
+                number
+                author { login }
+                createdAt
+                closedAt
+                isCrossRepository
+                merged
+                commits { totalCount }
+                comments { totalCount }
+                additions
+                deletions
+                changedFiles
+                reviews(first: 10) { nodes { state } }
+                participants(first: 20) { nodes { login } }
+              }
+            }
+          }
+        }
+        """
+
         rows = []
-        for pr in prs:
-            # Fetch reviews/events for detailed metrics
-            reviews = list(pr.get_reviews())
-            approvals = len([r for r in reviews if r.state == 'APPROVED'])
-            change_requests = len([r for r in reviews if r.state == 'CHANGES_REQUESTED'])
-        
-            # Fetch unique participants
-            participants = {pr.user.login}
-            for comment in pr.get_issue_comments():
-                participants.add(comment.user.login)
-        
-            rows.append((
-                repo_full_name,
-                pr.user.login,
-                pr.number,
-                pr.created_at,
-                pr.closed_at,
-                pr.reopened if hasattr(pr, 'reopened') else False,
-                pr.merged,
-                ",".join(participants),
-                pr.commits,
-                pr.comments,
-                pr.additions,
-                pr.deletions,
-                pr.review_comments,
-                approvals,
-                change_requests,
-                pr.changed_files
-            ))
-    
-        if rows:
-            con.executemany("""
-                INSERT INTO prs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, rows)
-        progress.update(1)
+        cursor = None
+        has_next_page = True
+        retry_delay = 1  # Initial delay in seconds
 
-    def collect_repo_prs():
-        repos = con.execute("SELECT 'Full Name' FROM clean_repos").fetchall()
-    
-        # Initialize the prs table
+        while has_next_page:
+            try:
+                response = requests.post(
+                    GRAPHQL_URL,
+                    json={
+                        "query": query,
+                        "variables": {
+                            "owner": owner,
+                            "name": name,
+                            "cursor": cursor,
+                        },
+                    },
+                    headers=headers,
+                )
+
+                # Handle rate limiting (GitHub returns 403 for secondary rate limits or 429)
+                if response.status_code in (403, 429):
+                    print(f"Rate limited. Retrying in {retry_delay}s...")
+                    time.sleep(retry_delay)
+                    retry_delay = min(
+                        retry_delay * 2, 60
+                    )  # Exponential backoff up to 60s
+                    continue
+
+                response.raise_for_status()
+                retry_delay = 1  # Reset delay on success
+
+                result = response.json()
+                data = (
+                    result.get("data", {})
+                    .get("repository", {})
+                    .get("pullRequests", {})
+                )
+                nodes = data.get("nodes", [])
+
+                if not nodes:
+                    break
+
+                for pr in nodes:
+                    created_at = datetime.fromisoformat(
+                        pr["createdAt"].replace("Z", "+00:00")
+                    )
+                    if created_at < OLDEST_DATE:
+                        has_next_page = False
+                        break
+
+                    approvals = sum(
+                        1
+                        for r in pr["reviews"]["nodes"]
+                        if r["state"] == "APPROVED"
+                    )
+                    changes = sum(
+                        1
+                        for r in pr["reviews"]["nodes"]
+                        if r["state"] == "CHANGES_REQUESTED"
+                    )
+                    participants = [
+                        p["login"] for p in pr["participants"]["nodes"]
+                    ]
+
+                    rows.append(
+                        (
+                            repo_full_name,
+                            pr["author"]["login"] if pr["author"] else "unknown",
+                            pr["number"],
+                            created_at,
+                            pr["closedAt"],
+                            False,
+                            pr["merged"],
+                            ",".join(participants),
+                            pr["commits"]["totalCount"],
+                            pr["comments"]["totalCount"],
+                            pr["additions"],
+                            pr["deletions"],
+                            0,
+                            approvals,
+                            changes,
+                            pr["changedFiles"],
+                        )
+                    )
+
+                cursor = data["pageInfo"]["endCursor"]
+                has_next_page = data["pageInfo"]["hasNextPage"]
+
+            except Exception as e:
+                error_msg = e.__class__.__name__
+                print(f"Error processing {repo_full_name}: {error_msg}")
+                skipped_repos.append((repo_full_name, error_msg))
+                progress.update(
+                    subtitle=f"Error processing {repo_full_name}: {error_msg}"
+                )
+                break
+
+        if rows:
+            con.executemany(
+                "INSERT INTO prs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                rows,
+            )
+        progress.update(1, subtitle=f"Processed {repo_full_name}")
+
+
+    def collect_repo_prs(force=False):
+        repos = con.execute('SELECT "Full Name" FROM clean_repos').fetchall()
+        skipped_repos = []
+        if force:
+            con.execute("DROP TABLE IF EXISTS prs")
+            con.execute("DROP TABLE IF EXISTS skipped_repos")
+
         con.execute("""
             CREATE TABLE IF NOT EXISTS prs (
-                repo_name VARCHAR,
-                pr_creator VARCHAR,
-                issue_number INTEGER,
+                repo_name VARCHAR, 
+                pr_creator VARCHAR, 
+                issue_number INTEGER, 
                 opened_at TIMESTAMP,
-                closed_at TIMESTAMP,
-                is_reopened BOOLEAN,
-                is_merged BOOLEAN,
+                closed_at TIMESTAMP, 
+                is_reopened BOOLEAN, 
+                is_merged BOOLEAN, 
                 participants VARCHAR,
-                num_commits INTEGER,
-                num_comments INTEGER,
+                num_commits INTEGER, 
+                num_comments INTEGER, 
                 num_lines_added INTEGER,
-                num_lines_deleted INTEGER,
-                num_review_comments INTEGER,
+                num_lines_deleted INTEGER, 
+                num_review_comments INTEGER, 
                 num_approvals INTEGER,
-                num_change_requests INTEGER,
+                num_change_requests INTEGER, 
                 num_files_changed INTEGER
             )
         """)
-    
-        # Process repositories sequentially
-        with gh() as g:
-            with mo.status.progress_bar(total=len(repos)) as progress:
-                for repo_name in [r[0] for r in repos]:
-                    process_single_repo(repo_name, g, progress)
-    
-        mo.call_on_hide(lambda: None) # placeholder to trigger UI update
-        mo.alert("Data collection process has finished successfully!")
+        con.execute(
+            "CREATE TABLE IF NOT EXISTS skipped_repos (repo_name VARCHAR, reason VARCHAR)"
+        )
 
-    collect_repo_prs()
+        with mo.status.progress_bar(
+            total=len(repos), title="Fetching GitHub PR Data via GraphQL"
+        ) as progress:
+            for repo_name in [r[0] for r in repos]:
+                process_single_repo(repo_name, progress, skipped_repos)
+
+        if skipped_repos:
+            con.executemany(
+                "INSERT INTO skipped_repos VALUES (?, ?)", skipped_repos
+            )
+            print(f"Finished. Skipped {len(skipped_repos)} repositories.")
+
+    return (collect_repo_prs,)
+
+
+@app.cell
+def _():
+    force_toggle = mo.ui.switch(label="Force toggle", value=False)
+    force_toggle
+    return (force_toggle,)
+
+
+@app.cell
+def _(collect_repo_prs, force_toggle):
+    mo.ui.button(
+        label="Delete previous data",
+        kind="danger",
+        on_change=lambda _: collect_repo_prs(force=force_toggle.value),
+    )
     return
 
 
