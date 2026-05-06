@@ -19,7 +19,7 @@ with app.setup:
     TOKENS = [GITHUB_TOKEN]
     count = 4
     for i in range(count - 1):
-        TOKENS.append(os.environ.get(f"GITHUB_TOKEN_{i+2}", GITHUB_TOKEN))
+        TOKENS.append(os.environ.get(f"GITHUB_TOKEN_{i + 2}", GITHUB_TOKEN))
     GRAPHQL_URL = "https://api.github.com/graphql"
 
 
@@ -62,13 +62,17 @@ def _():
         con.execute("DROP TABLE IF EXISTS repos")
         print("Table cleaned up!")
 
+    def close_con(_):
+        con.close()
+        print("Database connection closed.")
 
+    close_btn = mo.ui.button(on_click=close_con, label="Close DB Connection")
     create_btn = mo.ui.button(on_click=setup_repos, label="Create Table!")
     clean_btn = mo.ui.button(
         on_click=cleanup_db, kind="danger", label="Cleanup table"
     )
     mo.hstack(
-        [create_btn, clean_btn],
+        [create_btn, clean_btn, close_btn],
         justify="start",
     )
     return (con,)
@@ -461,7 +465,7 @@ def _(con):
         import threading
 
         repos = con.execute(
-            "SELECT \"Full Name\" FROM task_repos WHERE reason <> 'Processed'"
+            "SELECT \"Full Name\" FROM task_repos WHERE reason = 'Unprocessed'"
         ).fetchall()
         skipped_repos = []
         lock = threading.Lock()
@@ -486,13 +490,14 @@ def _(con):
                     repo_name = futures[future]
                     try:
                         result = future.result()
+                        time = datetime.now().strftime("%m-%d %H:%M:%S")
                         if result and result.get("status") == "error":
                             progress.update(
                                 1,
-                                subtitle=f"Error processing {repo_name}: {result.get('reason', 'UnknownError')}",
+                                subtitle=f"{time}|Error processing {repo_name}: {result.get('reason', 'UnknownError')}",
                             )
                         else:
-                            progress.update(1, subtitle=f"Processed {repo_name}")
+                            progress.update(1, subtitle=f"{time}|Processed {repo_name}")
                     except Exception as e:
                         error_msg = e.__class__.__name__
                         progress.update(
@@ -546,8 +551,8 @@ def _(con):
         """
         try:
             con.execute("BEGIN TRANSACTION")
-        
-            # Merge operation: 
+
+            # Merge operation:
             # Update existing records in task_repos that exist in skipped_repos
             con.execute("""
                 UPDATE task_repos
@@ -555,18 +560,80 @@ def _(con):
                 FROM skipped_repos s
                 WHERE task_repos."Full Name" = s.repo_name
             """)
-        
+
             con.execute("COMMIT")
-            print("Successfully updated task_repos with latest status from skipped_repos.")
+            print(
+                "Successfully updated task_repos with latest status from skipped_repos."
+            )
         except Exception as e:
             con.execute("ROLLBACK")
             print(f"Failed to update task_repos: {e}")
 
+
     update_btn = mo.ui.button(
         label="Sync Status: Skipped to Task",
-        on_click=lambda _: update_task_repos_from_skipped()
+        on_click=lambda _: update_task_repos_from_skipped(),
     )
     update_btn
+    return
+
+
+@app.cell(hide_code=True)
+def _(con):
+    # Create new contributor table with unique contributor and PR that the contributor participated in
+    table_name = "participants"
+    create_participants_table = f"""
+    CREATE TABLE IF NOT EXISTS {table_name}
+    AS SELECT repo_name, issue_number, unnest(string_split(participants, ',')) AS participant
+    FROM prs, unnest(string_split(participants, ',')) AS contributor
+    """
+
+    mo.ui.button(on_click=lambda _: con.execute(create_participants_table), label="Create Contributor Table!")
+    return
+
+
+@app.cell
+def _(con):
+    # Simply label PRs with has AI contribution when Copilot is one of the participants
+    def label_copilot_contributions(_):
+        try:
+            con.execute("ALTER TABLE prs ADD COLUMN has_copilot_contribution BOOLEAN DEFAULT FALSE")
+        except Exception:
+            # Column may already exist, ignore error
+            pass
+
+        con.execute("""
+            UPDATE prs
+            SET has_copilot_contribution = TRUE
+            WHERE ',' || participants || ',' LIKE '%,copilot,%'
+        """)
+        print("Labeled PRs with Copilot contributions.")
+
+    def label_bot_contributions(_):
+        try:
+            con.execute("ALTER TABLE prs ADD COLUMN has_bot_contribution BOOLEAN DEFAULT FALSE")
+        except Exception:
+            # Column may already exist, ignore error
+            pass
+
+        con.execute("""
+            UPDATE prs
+            SET has_bot_contribution = TRUE
+            WHERE participants LIKE '%bot%'
+        """)
+        print("Labeled PRs with bot contributions.")
+
+    copilot_btn = mo.ui.button(on_click=label_copilot_contributions, label="Label Copilot Contributions!")
+    bot_btn = mo.ui.button(on_click=label_bot_contributions, label="Label Bot Contributions!")
+    mo.hstack([
+        copilot_btn,
+        bot_btn
+    ], justify="start")
+    return
+
+
+@app.cell
+def _():
     return
 
 
